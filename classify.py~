@@ -1,0 +1,100 @@
+from four_point_transform import four_point_transform
+import cv2
+import imutils
+import numpy as np
+from skimage.filters import threshold_local
+from PIL import Image, ImageOps, ImageDraw
+from scipy.ndimage import morphology, label
+
+image = cv2.imread("hand_written_note.jpg")
+cv2_im = cv2.cvtColor(image,cv2.COLOR_BGR2RGB)
+pil_im = Image.fromarray(cv2_im)
+
+ratio = image.shape[0]/500.0
+orig = image.copy()
+image = imutils.resize(image, height=500)
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+gray = cv2.GaussianBlur(gray, (5,5), 0)
+def autocanny(image, sigma=0.33):
+    v = np.median(image)
+    lower = int(max(0, (1.0-sigma)*v))
+    upper = int(min(255, (1.0+sigma)*v))
+    edged = cv2.Canny(image, lower, upper)
+    return edged
+
+edged = autocanny(gray)
+cnts = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+cnts = cnts[0] if imutils.is_cv2() else cnts[1]
+cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+for c in cnts:
+    peri = cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, 0.02*peri, True)
+    if len(approx)==4:
+        screenCnt = approx
+        break
+cv2.drawContours(image, [screenCnt], -1, (0,255,0),2)
+warped = four_point_transform(orig, screenCnt.reshape(4,2)*ratio)
+warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+T = threshold_local(warped, 11, offset=10, method="gaussian")
+warped = (warped>T).astype("uint8")*255
+height, width = warped.shape
+warped = warped[int(0.05*height): int(0.95*height), int(0.01*width): int(0.99*width)]
+#gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+gray = cv2.GaussianBlur(warped, (5,5), 0)
+edged = autocanny(gray)
+cnts = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+cnts = cnts[0] if imutils.is_cv2() else cnts[1]
+cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+lines = cv2.HoughLines(edged,1,np.pi/180,200)
+for rho,theta in lines[0]:
+    a = np.cos(theta)
+    b = np.sin(theta)
+    x0 = a*rho
+    y0 = b*rho
+    x1 = int(x0 + 1000*(-b))
+    y1 = int(y0 + 1000*(a))
+    x2 = int(x0 - 1000*(-b))
+    y2 = int(y0 - 1000*(a))
+
+    cv2.line(warped,(x1,y1),(x2,y2),(0,0,255),2)
+
+cv2.imwrite('houghlines3.jpg',warped)
+
+def boxes(orig):
+    img = ImageOps.grayscale(orig)
+    im = numpy.array(img)
+
+    # Inner morphological gradient.
+    im = morphology.grey_dilation(im, (3, 3)) - im
+
+    # Binarize.
+    mean, std = im.mean(), im.std()
+    t = mean + std
+    im[im < t] = 0
+    im[im >= t] = 1
+
+    # Connected components.
+    lbl, numcc = label(im)
+    # Size threshold.
+    min_size = 200 # pixels
+    box = []
+    print("Number of connected components is: " + str(numcc))
+    for i in range(1, numcc + 1):
+        py, px = numpy.nonzero(lbl == i)
+        if len(py) < min_size:
+            im[lbl == i] = 0
+            continue
+
+        xmin, xmax, ymin, ymax = px.min(), px.max(), py.min(), py.max()
+        # Four corners and centroid.
+        box.append([
+            [(xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax)],
+            (numpy.mean(px), numpy.mean(py))])
+
+    print("finished running boxes!")
+    return im.astype(numpy.uint8) * 255, box
+
+cv2.imwrite("testImage.png", warped)
+cv2.imwrite("edged.png", edged)
+#cv2.imshow("warped image", warped)
+#cv2.waitKey(0)
